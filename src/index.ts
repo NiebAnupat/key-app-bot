@@ -3,9 +3,23 @@ import { exec } from "child_process";
 import { Browser, chromium, Page } from "playwright";
 import * as net from "net";
 import * as fs from "fs";
+import * as readline from "readline";
 // @ts-ignore
 import thaiIdCard from "thai-id-card";
 import { thFaker } from "./thFaker";
+
+function promptInput(question: string): Promise<string> {
+   return new Promise((resolve) => {
+      const rl = readline.createInterface({
+         input: process.stdin,
+         output: process.stdout,
+      });
+      rl.question(question, (answer) => {
+         rl.close();
+         resolve(answer.trim());
+      });
+   });
+}
 
 function waitForPort(
    port: number,
@@ -71,15 +85,34 @@ function generateOrderData(): OrderData {
 }
 
 async function createOrder(page: Page, data: OrderData) {
-   await page.goto("https://prmorder.uatsiamsmile.com/premiumnoticepages");
+   if (page.isClosed()) {
+      page = await page.context().newPage();
+   }
+   try {
+      await page.goto("https://prmorder.uatsiamsmile.com/premiumnoticepages");
+   } catch (err) {
+      // if frame detached, recreate page and retry
+      const e: any = err;
+      if (e && e.message && e.message.includes("Frame has been detached")) {
+         page = await page.context().newPage();
+         await page.goto(
+            "https://prmorder.uatsiamsmile.com/premiumnoticepages",
+         );
+      } else {
+         throw err;
+      }
+   }
    await page.waitForLoadState("networkidle");
    log("Navigated to order page, waiting for content to load...");
 
    await page.fill('input[name="cardDetail"]', data.thaiId);
+   await page.waitForTimeout(800);
    await page.click('div[role="button"][aria-haspopup="listbox"]');
    await page.waitForTimeout(800);
    await page.fill('input[name="firstName"]', data.firstName);
+   await page.waitForTimeout(800);
    await page.fill('input[name="lastName"]', data.lastName);
+   await page.waitForTimeout(800);
    await page.fill('input[name="phoneNumber"]', data.tel);
    await page
       .locator('button[type="submit"]', { hasText: "ประกันสุขภาพ" })
@@ -188,7 +221,14 @@ async function generateAppId(sssPage: Page): Promise<string> {
    }
 }
 
-async function processSSSApp(browser: Browser, data: OrderData, appId: string) {
+async function processSSSApp(
+   browser: Browser,
+   data: OrderData,
+   appId: string,
+   dcrMonth: string,
+   dcrYear: string,
+   payerRelation: string,
+) {
    // get sss page
    const pages = browser.contexts()[0].pages();
    const sssPage = pages[pages.length - 1];
@@ -202,6 +242,19 @@ async function processSSSApp(browser: Browser, data: OrderData, appId: string) {
       'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabApplicationDetail$ucApplicationDetail1$txtAppID"]',
       appId,
    );
+
+   // select เดือน DCR (Month Period) - ค่าที่ผู้ใช้เลือก
+   await sssPage.selectOption(
+      'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabApplicationDetail$ucApplicationDetail1$ucMonthYearPeriod$ddlMonth"]',
+      dcrMonth,
+   );
+
+   // select ปี DCR (Year Period) - ค่าที่ผู้ใช้เลือก
+   await sssPage.selectOption(
+      'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabApplicationDetail$ucApplicationDetail1$ucMonthYearPeriod$ddlYear"]',
+      dcrYear,
+   );
+   await sssPage.waitForTimeout(800);
 
    // select คำนำหน้า (Title) - "คุณ" = value "1001"
    await sssPage.selectOption(
@@ -227,9 +280,7 @@ async function processSSSApp(browser: Browser, data: OrderData, appId: string) {
       "01/01/2546",
    );
 
-   await sssPage.click(
-      'button.ui-datepicker-close',
-   );
+   await sssPage.click("button.ui-datepicker-close");
    await sssPage.waitForTimeout(800);
 
    // select รถ Zebra Car - "000 (สำนักงาน -)"
@@ -243,6 +294,8 @@ async function processSSSApp(browser: Browser, data: OrderData, appId: string) {
       'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabApplicationDetail$ucApplicationDetail1$ucUDWDay1$ddlTimePeriod"]',
       "6901",
    );
+
+   await sssPage.waitForTimeout(800);
 
    sssPage.waitForTimeout(800);
 
@@ -352,19 +405,19 @@ async function processSSSApp(browser: Browser, data: OrderData, appId: string) {
    // จังหวัด → อำเภอ → ตำบล (cascade dropdowns with postback)
    await sssPage.selectOption(
       'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabCustomerDetail$ucCustomerDetail1$tabContainMain$TabPanel1$ucHomeAddress$ucProvinceAmphoeTumbol$ddlProvince"]',
-      "10", // กรุงเทพมหานคร
+      "50", // เชียงใหม่
    );
    await sssPage.waitForLoadState("networkidle");
 
    await sssPage.selectOption(
       'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabCustomerDetail$ucCustomerDetail1$tabContainMain$TabPanel1$ucHomeAddress$ucProvinceAmphoeTumbol$ddlAmphoe"]',
-      "1", // คลองเตย
+      "523", // เมืองเชียงใหม่
    );
    await sssPage.waitForLoadState("networkidle");
 
    await sssPage.selectOption(
       'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabCustomerDetail$ucCustomerDetail1$tabContainMain$TabPanel1$ucHomeAddress$ucProvinceAmphoeTumbol$ddlTumbol"]',
-      "1", // คลองตัน
+      "ช้างเผือก", // ช้างเผือก
    );
    await sssPage.waitForLoadState("networkidle");
 
@@ -404,12 +457,65 @@ async function processSSSApp(browser: Browser, data: OrderData, appId: string) {
    );
    await sssPage.waitForLoadState("networkidle");
 
-   // select ความสัมพันธ์ผู้ชำระเงิน - "เป็นบุคคลเดียวกันกับผู้เอาประกัน"
+   // select ความสัมพันธ์ผู้ชำระเงิน ตามที่ผู้ใช้ป้อน
    await sssPage.selectOption(
       'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ddlPayerRelationShip"]',
-      "3000",
+      payerRelation || "3000",
    );
    await sssPage.waitForLoadState("networkidle");
+
+   // หากไม่ใช่ตัวเอง ให้กรอกข้อมูลสุ่มเพื่อเลี่ยงช่องว่าง
+   if ((payerRelation || "3000") !== "3000") {
+      await sssPage.check(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$rdbCard"][value="rdbZCardID"]',
+      );
+
+      await sssPage.fill(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$ucZCardIDPayer$txtCardID"]',
+         thaiIdCard.generate(),
+      );
+
+      await sssPage.selectOption(
+         'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$ddlTitle"]',
+         "1001",
+      );
+      await sssPage.fill(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$txtFirstName"]',
+         thFaker.person.firstName(),
+      );
+      await sssPage.fill(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$txtLastName"]',
+         thFaker.person.lastName(),
+      );
+      await sssPage.selectOption(
+         'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$ddlOccupation"]',
+         "1000", // เกษตรกร
+      );
+
+      await sssPage.selectOption(
+         'select[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$ddlOccupationLevel"]',
+         "1001", // เกษตรกร
+      );
+
+      await sssPage.fill(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$txtEmail"]',
+         "-",
+      );
+      await sssPage.fill(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$txtPhoneNumber"]',
+         data.tel,
+      );
+
+      await sssPage.click(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$btnCopyContactAddress"]',
+      );
+
+      await sssPage.click(
+         'input[name="ctl00$ContentPlaceHolder1$TabContainer1$tabPayerDetail$ucPayer1$btnCopyWorkAddress"]',
+      );
+
+      await sssPage.waitForLoadState("networkidle");
+   }
 
    // click "ถัดไป >" button on payer detail tab
    await sssPage.click(
@@ -501,12 +607,7 @@ async function processSSSApp(browser: Browser, data: OrderData, appId: string) {
    await pdpaPage.waitForTimeout(800);
    await pdpaPage.click("button.confirm");
    await pdpaPage.waitForTimeout(800);
-
-
-   // wait for page to close automatically (3 sec)
-   await pdpaPage.waitForEvent("close", { timeout: 10000 }).catch(() => {
-      log("PDPA page did not close automatically, continuing...");
-   });
+   await pdpaPage.close();
    await sssPage.waitForLoadState("networkidle");
 
    // click "บันทึกและส่ง MO ทันที" button on memo tab
@@ -528,6 +629,83 @@ function appendSuccessLog(data: OrderData, appId: string) {
 }
 
 async function main() {
+   // prompt user for DCR and run parameters before opening browser
+   const currentMonth = String(new Date().getMonth() + 1);
+   const monthNames: Record<string, string> = {
+      "1": "ม.ค.",
+      "2": "ก.พ.",
+      "3": "มี.ค.",
+      "4": "เม.ย.",
+      "5": "พ.ค.",
+      "6": "มิ.ย.",
+      "7": "ก.ค.",
+      "8": "ส.ค.",
+      "9": "ก.ย.",
+      "10": "ต.ค.",
+      "11": "พ.ย.",
+      "12": "ธ.ค.",
+   };
+   log("\n=== เลือกเดือน DCR ===");
+   log("1=ม.ค.  2=ก.พ.  3=มี.ค.  4=เม.ย.  5=พ.ค.  6=มิ.ย.");
+   log("7=ก.ค.  8=ส.ค.  9=ก.ย.  10=ต.ค.  11=พ.ย. 12=ธ.ค.");
+   let dcrMonth = currentMonth;
+   while (true) {
+      const monthInput = await promptInput(
+         `กรุณากรอกเลขเดือน (1-12, Enter=${currentMonth}): `,
+      );
+      if (monthInput === "") {
+         break;
+      }
+      if (monthNames[monthInput]) {
+         dcrMonth = monthInput;
+         break;
+      }
+      log(`ค่าไม่ถูกต้อง: "${monthInput}" กรุณากรอกใหม่`);
+   }
+   log(`เลือกเดือน: ${monthNames[dcrMonth]} (${dcrMonth})\n`);
+
+   const defaultYear = String(new Date().getFullYear() + 543);
+   let dcrYear = "";
+   while (true) {
+      const dcrYearInput = await promptInput(
+         `กรุณากรอกปี พ.ศ. DCR (Enter เพื่อใช้ค่าปัจจุบัน ${defaultYear}): `,
+      );
+      if (dcrYearInput === "") {
+         dcrYear = defaultYear;
+         break;
+      } else if (/^\d{4}$/.test(dcrYearInput)) {
+         dcrYear = dcrYearInput;
+         break;
+      } else {
+         log(
+            `ค่าไม่ถูกต้อง: "${dcrYearInput}" กรุณากรอกเป็นตัวเลข พ.ศ. เช่น ${defaultYear}`,
+         );
+      }
+   }
+   log(`เลือกปี: ${dcrYear}\n`);
+
+   let runTimes = 1;
+   const timesInput = await promptInput(
+      "กรุณากรอกจำนวนครั้งที่ต้องการทำ (Enter=1): ",
+   );
+   if (/^\d+$/.test(timesInput) && parseInt(timesInput) >= 1) {
+      runTimes = parseInt(timesInput);
+   } else if (timesInput !== "") {
+      log(`ค่าไม่ถูกต้อง: "${timesInput}" ใช้ค่าเริ่มต้น 1`);
+   }
+   log(`จะทำจำนวน ${runTimes} ครั้ง\n`);
+
+   let payerRelation = "3000";
+   let payerRelationLabel = "เป็นบุคคลเดียวกันกับผู้เอาประกัน";
+   const payerInput = await promptInput(
+      "ผู้ชำระเบี้ยเป็นบุคคลเดียวกันกับผู้เอาประกัน? (y=ใช่, n=ไม่ใช่, Enter=ใช่): ",
+   );
+   if (payerInput.toLowerCase() === "n") {
+      payerRelation = "3042";
+      payerRelationLabel = "เพื่อน";
+   }
+   log(`เลือกความสัมพันธ์: ${payerRelationLabel}\n`);
+
    const port = 9222;
    const host = "127.0.0.1";
 
@@ -570,26 +748,45 @@ async function main() {
    // }
    // log("Current URL:", page.url());
 
-   const data = generateOrderData();
-   await createOrder(page, data);
-   await processPayment(page, data.fullName);
+   for (let i = 1; i <= runTimes; i++) {
+      log(`\n===== ครั้งที่ ${i}/${runTimes} =====`);
+      // ensure we have a live page
+      let page = context.pages()[0] || (await context.newPage());
+      if (page.isClosed()) {
+         page = await context.newPage();
+      }
+      await page.bringToFront();
+      const data = generateOrderData();
+      await createOrder(page, data);
+      await processPayment(page, data.fullName);
 
-   // await openSSSPage(browser, page, "ทดสอบ ระบบ");
-   // page.goto(
-   //    "http://uat.siamsmile.co.th:9157/Modules/PH/frmPHNewApp1.aspx?IGCode=SUdOVzY5MDIwMDA1Njg=",
-   // );
-   await openSSSPage(page, data.fullName);
-   const sssPages = browser.contexts()[0].pages();
-   const sssPage = sssPages[sssPages.length - 1];
-   await sssPage.waitForLoadState("networkidle");
-   // check is sssPage url includes "frmPHNewApp1.aspx"
-   if (!sssPage.url().includes("frmPHNewApp1.aspx")) {
-      log("Error: SSS app page did not open correctly.");
-      return;
+      // await openSSSPage(browser, page, "ทดสอบ ระบบ");
+      // page.goto(
+      //    "http://uat.siamsmile.co.th:9157/Modules/PH/frmPHNewApp1.aspx?IGCode=SUdOVzY5MDIwMDA1Njg=",
+      // );
+      await openSSSPage(page, data.fullName);
+      const sssPages = browser.contexts()[0].pages();
+      const sssPage = sssPages[sssPages.length - 1];
+      await sssPage.waitForLoadState("networkidle");
+      // check is sssPage url includes "frmPHNewApp1.aspx"
+      if (!sssPage.url().includes("frmPHNewApp1.aspx")) {
+         log("Error: SSS app page did not open correctly.");
+         return;
+      }
+      const appId = await generateAppId(sssPage);
+      await processSSSApp(
+         browser,
+         data,
+         appId,
+         dcrMonth,
+         dcrYear,
+         payerRelation,
+      );
+
+      appendSuccessLog(data, appId);
+      log(`===== สำเร็จครั้งที่ ${i}/${runTimes} =====\n`);
    }
-   const appId = await generateAppId(sssPage);
-   await processSSSApp(browser, data, appId);
 
-   appendSuccessLog(data, appId);
+   log(`\nเสร็จสิ้นทั้งหมด ${runTimes} ครั้ง`);
 }
 main();
