@@ -716,7 +716,7 @@ async function main() {
       log("Edge already running on port 9222, connecting...");
    } else {
       log("Edge not running on port 9222, launching...");
-      const command = `"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-port=${port} --force-dark-mode`;
+      const command = `"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-port=${port}`;
       exec(command, (error, stdout, stderr) => {
          if (error) {
             console.error(`Error executing command: ${error}`);
