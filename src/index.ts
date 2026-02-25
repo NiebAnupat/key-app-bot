@@ -1,7 +1,5 @@
 import { log } from "console";
-import { exec } from "child_process";
 import { Browser, chromium, Page } from "playwright";
-import * as net from "net";
 import * as fs from "fs";
 import * as readline from "readline";
 // @ts-ignore
@@ -21,47 +19,6 @@ function promptInput(question: string): Promise<string> {
    });
 }
 
-function waitForPort(
-   port: number,
-   host: string,
-   timeout = 15000,
-): Promise<void> {
-   return new Promise((resolve, reject) => {
-      const start = Date.now();
-      const tryConnect = () => {
-         const socket = new net.Socket();
-         socket.once("connect", () => {
-            socket.destroy();
-            resolve();
-         });
-         socket.once("error", () => {
-            socket.destroy();
-            if (Date.now() - start > timeout) {
-               reject(new Error(`Timed out waiting for port ${port}`));
-            } else {
-               setTimeout(tryConnect, 500);
-            }
-         });
-         socket.connect(port, host);
-      };
-      tryConnect();
-   });
-}
-
-function isPortOpen(port: number, host: string): Promise<boolean> {
-   return new Promise((resolve) => {
-      const socket = new net.Socket();
-      socket.once("connect", () => {
-         socket.destroy();
-         resolve(true);
-      });
-      socket.once("error", () => {
-         socket.destroy();
-         resolve(false);
-      });
-      socket.connect(port, host);
-   });
-}
 
 interface OrderData {
    thaiId: string;
@@ -71,7 +28,7 @@ interface OrderData {
    tel: string;
 }
 
-function generateOrderData(): OrderData {
+function generateOrderData(tel: string): OrderData {
    const thaiId = thaiIdCard.generate();
    const firstName = thFaker.person.firstName();
    const lastName = thFaker.person.lastName();
@@ -80,7 +37,7 @@ function generateOrderData(): OrderData {
       firstName,
       lastName,
       fullName: `${firstName} ${lastName}`,
-      tel: "0661128806",
+      tel,
    };
 }
 
@@ -684,6 +641,18 @@ async function main() {
    }
    log(`เลือกปี: ${dcrYear}\n`);
 
+   // ask user for telephone number to use in orders
+   let tel = "0836151973";
+   const telInput = await promptInput(
+      `กรุณากรอกหมายเลขโทรศัพท์ที่จะใช้ (Enter=${tel}): `,
+   );
+   if (/^0\d{8,9}$/.test(telInput)) {
+      tel = telInput;
+   } else if (telInput !== "") {
+      log(`หมายเลขไม่ถูกต้อง: "${telInput}" ใช้ค่าปริยาย ${tel}`);
+   }
+   log(`หมายเลขโทรศัพท์ที่ใช้: ${tel}\n`);
+
    let runTimes = 1;
    const timesInput = await promptInput(
       "กรุณากรอกจำนวนครั้งที่ต้องการทำ (Enter=1): ",
@@ -706,36 +675,26 @@ async function main() {
    }
    log(`เลือกความสัมพันธ์: ${payerRelationLabel}\n`);
 
-   const port = 9222;
-   const host = "127.0.0.1";
+   // Launch a fresh browser instance instead of attaching via remote debugging
+   // By default Playwright uses Chromium; to use Microsoft Edge specify
+   // either the channel or an explicit executablePath.
+   // Example using channel:
+   //    const browser = await chromium.launch({ headless: false, channel: "msedge" });
+   // Example using a path:
+   //    const browser = await chromium.launch({ headless: false, executablePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" });
+   // Uncomment/change one of the above lines depending on which browser you want to launch.
 
-   // Check if Edge is already running with debugging port
-   const alreadyRunning = await isPortOpen(port, host);
+   const browser = await chromium.launch({ headless: false, channel: "msedge" });
 
-   if (alreadyRunning) {
-      log("Edge already running on port 9222, connecting...");
-   } else {
-      log("Edge not running on port 9222, launching...");
-      const command = `"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --remote-debugging-port=${port}`;
-      exec(command, (error, stdout, stderr) => {
-         if (error) {
-            console.error(`Error executing command: ${error}`);
-            return;
-         }
-         console.log(`stdout: ${stdout}`);
-      });
-
-      log("Waiting for Edge to start on port 9222...");
-      await waitForPort(port, host);
-      log("Edge is ready!");
-   }
-
-   const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
-
-   const context = browser.contexts()[0];
-   const page = context.pages()[0] || (await context.newPage());
+   // create a new context/page for automation
+   const context = await browser.newContext();
+   const page = await context.newPage();
 
    await page.bringToFront();
+
+   // start run loop
+   for (let i = 1; i <= runTimes; i++) {
+      log(`\n===== ครั้งที่ ${i}/${runTimes} =====`);
 
    // Navigate to the desired URL
    // await page.goto("https://prmorder.uatsiamsmile.com");
@@ -747,16 +706,13 @@ async function main() {
    //    log("Login successful, continuing...");
    // }
    // log("Current URL:", page.url());
-
-   for (let i = 1; i <= runTimes; i++) {
-      log(`\n===== ครั้งที่ ${i}/${runTimes} =====`);
       // ensure we have a live page
       let page = context.pages()[0] || (await context.newPage());
       if (page.isClosed()) {
          page = await context.newPage();
       }
       await page.bringToFront();
-      const data = generateOrderData();
+      const data = generateOrderData(tel);
       await createOrder(page, data);
       await processPayment(page, data.fullName);
 
