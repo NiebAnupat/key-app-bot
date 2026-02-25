@@ -2,20 +2,71 @@ import { log } from "console";
 import { Browser, chromium, Page } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
-import * as readline from "readline";
+// we no longer read from CLI; use a simple HTTP form for input
+import * as http from "http";
+import { URLSearchParams } from "url";
 // @ts-ignore
 import thaiIdCard from "thai-id-card";
 import { thFaker } from "./thFaker";
 
-function promptInput(question: string): Promise<string> {
-   return new Promise((resolve) => {
-      const rl = readline.createInterface({
-         input: process.stdin,
-         output: process.stdout,
+// serve a web form and wait for user to submit configuration
+async function getWebInput(): Promise<{
+   dcrMonth: string;
+   dcrYear: string;
+   tel: string;
+   runTimes: number;
+   payerRelation: string;
+}> {
+   // prepare defaults
+   const now = new Date();
+   const defaultMonth = String(now.getMonth() + 1);
+   const defaultYear = String(now.getFullYear() + 543);
+   const defaultTel = "0836151973";
+
+   return new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+         if (req.method === "GET") {
+            let html = fs.readFileSync(path.join(__dirname, "form.html"), "utf-8");
+            // apply selections
+            const selIndex = parseInt(defaultMonth, 10);
+            for (let i = 1; i <= 12; i++) {
+               html = html.replace(`%%SEL${i}%%`, i === selIndex ? "selected" : "");
+            }
+            html = html.replace("%%DEFAULT_YEAR%%", defaultYear);
+            html = html.replace("%%DEFAULT_TEL%%", defaultTel);
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(html);
+         } else if (req.method === "POST") {
+            let body = "";
+            req.on("data", (chunk) => {
+               body += chunk.toString();
+            });
+            req.on("end", () => {
+               const params = new URLSearchParams(body);
+               const dcrMonth = params.get("dcrMonth") || "";
+               const dcrYear = params.get("dcrYear") || "";
+               const tel = params.get("tel") || "";
+               const runTimes = parseInt(params.get("runTimes") || "1", 10);
+               const payerRelation = params.get("payerRelation") || "3000";
+               res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+               res.end("ค่าถูกส่งแล้ว! ปิดหน้านี้ได้เลย");
+               server.close();
+               resolve({ dcrMonth, dcrYear, tel, runTimes, payerRelation });
+            });
+         } else {
+            res.writeHead(405);
+            res.end();
+         }
       });
-      rl.question(question, (answer) => {
-         rl.close();
-         resolve(answer.trim());
+      server.listen(3000, () => {
+         const url = "http://localhost:3000";
+         console.log(`โปรดเปิดเว็บเบราว์เซอร์ไปที่ ${url} เพื่อกำหนดค่าการทำงาน`);
+         // try to open automatically
+         try {
+            const { exec } = require("child_process");
+            const opener = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
+            exec(`${opener} ${url}`);
+         } catch {}
       });
    });
 }
@@ -589,94 +640,48 @@ function appendSuccessLog(data: OrderData, appId: string) {
 }
 
 async function main() {
-   // prompt user for DCR and run parameters before opening browser
+   // get inputs from web UI instead of CLI
    const currentMonth = String(new Date().getMonth() + 1);
-   const monthNames: Record<string, string> = {
-      "1": "ม.ค.",
-      "2": "ก.พ.",
-      "3": "มี.ค.",
-      "4": "เม.ย.",
-      "5": "พ.ค.",
-      "6": "มิ.ย.",
-      "7": "ก.ค.",
-      "8": "ส.ค.",
-      "9": "ก.ย.",
-      "10": "ต.ค.",
-      "11": "พ.ย.",
-      "12": "ธ.ค.",
-   };
-   log("\n=== เลือกเดือน DCR ===");
-   log("1=ม.ค.  2=ก.พ.  3=มี.ค.  4=เม.ย.  5=พ.ค.  6=มิ.ย.");
-   log("7=ก.ค.  8=ส.ค.  9=ก.ย.  10=ต.ค.  11=พ.ย. 12=ธ.ค.");
-   let dcrMonth = currentMonth;
-   while (true) {
-      const monthInput = await promptInput(
-         `กรุณากรอกเลขเดือน (1-12, Enter=${currentMonth}): `,
-      );
-      if (monthInput === "") {
-         break;
-      }
-      if (monthNames[monthInput]) {
-         dcrMonth = monthInput;
-         break;
-      }
-      log(`ค่าไม่ถูกต้อง: "${monthInput}" กรุณากรอกใหม่`);
-   }
-   log(`เลือกเดือน: ${monthNames[dcrMonth]} (${dcrMonth})\n`);
-
    const defaultYear = String(new Date().getFullYear() + 543);
-   let dcrYear = "";
-   while (true) {
-      const dcrYearInput = await promptInput(
-         `กรุณากรอกปี พ.ศ. DCR (Enter เพื่อใช้ค่าปัจจุบัน ${defaultYear}): `,
-      );
-      if (dcrYearInput === "") {
-         dcrYear = defaultYear;
-         break;
-      } else if (/^\d{4}$/.test(dcrYearInput)) {
-         dcrYear = dcrYearInput;
-         break;
-      } else {
-         log(
-            `ค่าไม่ถูกต้อง: "${dcrYearInput}" กรุณากรอกเป็นตัวเลข พ.ศ. เช่น ${defaultYear}`,
-         );
-      }
-   }
-   log(`เลือกปี: ${dcrYear}\n`);
+   const defaultTel = "0836151973";
 
-   // ask user for telephone number to use in orders
-   let tel = "0836151973";
-   const telInput = await promptInput(
-      `กรุณากรอกหมายเลขโทรศัพท์ที่จะใช้ (Enter=${tel}): `,
-   );
-   if (/^0\d{8,9}$/.test(telInput)) {
-      tel = telInput;
-   } else if (telInput !== "") {
-      log(`หมายเลขไม่ถูกต้อง: "${telInput}" ใช้ค่าปริยาย ${tel}`);
-   }
-   log(`หมายเลขโทรศัพท์ที่ใช้: ${tel}\n`);
+   console.log("เริ่มต้นเซิร์ฟเวอร์สำหรับรับข้อมูล...");
+   const {
+      dcrMonth: rawMonth,
+      dcrYear: rawYear,
+      tel: rawTel,
+      runTimes: rawTimes,
+      payerRelation: rawPayer,
+   } = await getWebInput();
 
+   // apply defaults/validation
+   let dcrMonth = rawMonth || currentMonth;
+   if (!(+dcrMonth >= 1 && +dcrMonth <= 12)) {
+      dcrMonth = currentMonth;
+   }
+   let dcrYear = rawYear || defaultYear;
+   if (!/^\d{4}$/.test(dcrYear)) {
+      dcrYear = defaultYear;
+   }
+   let tel = rawTel || defaultTel;
+   if (!/^0\d{8,9}$/.test(tel)) {
+      console.log(`หมายเลขโทรศัพท์ไม่ถูกต้อง (${tel}), ใช้ค่าเริ่มต้น ${defaultTel}`);
+      tel = defaultTel;
+   }
    let runTimes = 1;
-   const timesInput = await promptInput(
-      "กรุณากรอกจำนวนครั้งที่ต้องการทำ (Enter=1): ",
-   );
-   if (/^\d+$/.test(timesInput) && parseInt(timesInput) >= 1) {
-      runTimes = parseInt(timesInput);
-   } else if (timesInput !== "") {
-      log(`ค่าไม่ถูกต้อง: "${timesInput}" ใช้ค่าเริ่มต้น 1`);
+   if (!isNaN(rawTimes) && rawTimes >= 1) {
+      runTimes = rawTimes;
    }
-   log(`จะทำจำนวน ${runTimes} ครั้ง\n`);
+   let payerRelation = rawPayer || "3000";
+   if (payerRelation !== "3000" && payerRelation !== "3042") {
+      payerRelation = "3000";
+   }
 
-   let payerRelation = "3000";
-   let payerRelationLabel = "เป็นบุคคลเดียวกันกับผู้เอาประกัน";
-   const payerInput = await promptInput(
-      "ผู้ชำระเบี้ยเป็นบุคคลเดียวกันกับผู้เอาประกัน? (y=ใช่, n=ไม่ใช่, Enter=ใช่): ",
-   );
-   if (payerInput.toLowerCase() === "n") {
-      payerRelation = "3042";
-      payerRelationLabel = "เพื่อน";
-   }
-   log(`เลือกความสัมพันธ์: ${payerRelationLabel}\n`);
+   console.log(`เลือกเดือน: ${dcrMonth}`);
+   console.log(`เลือกปี: ${dcrYear}`);
+   console.log(`โทรศัพท์: ${tel}`);
+   console.log(`จำนวนรอบ: ${runTimes}`);
+   console.log(`ความสัมพันธ์ผู้ชำระ: ${payerRelation}`);
 
    // Launch a browser using a persistent context so that the default profile
    // (cookies, logged-in sessions, etc.) is reused. The directory can be
