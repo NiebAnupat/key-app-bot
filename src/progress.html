@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="utf-8">
+    <title>Key-App-Bot Progress</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>body { font-family: 'Inter', 'Noto Sans Thai', sans-serif; }</style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col items-center justify-center p-4 sm:p-8">
+
+    <div class="bg-white/90 backdrop-blur-sm p-8 sm:p-10 rounded-3xl shadow-2xl border border-slate-200/60 w-full max-w-5xl transition-all">
+
+        <div class="mb-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div>
+                <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-blue-500 tracking-tight">
+                    Key-App-Bot
+                </h1>
+                <p class="text-sm text-slate-500 mt-1 font-medium">ระบบติดตามสถานะการทำงาน</p>
+            </div>
+
+            <div class="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-full border border-emerald-100 shadow-sm">
+                <span class="relative flex h-3 w-3" id="ping-indicator">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                </span>
+                <span class="text-sm font-semibold" id="connection-status">Live Updates</span>
+            </div>
+        </div>
+
+        <div class="mb-8">
+            <div class="flex justify-between text-sm font-semibold text-slate-600 mb-2">
+                <span>ความคืบหน้า</span>
+                <div class="flex items-center gap-2">
+                    <span id="progress-text">0%</span>
+                    <span id="progress-count" class="text-xs text-slate-500">0/0</span>
+                </div>
+            </div>
+            <div class="w-full bg-slate-100 rounded-full h-2.5 shadow-inner overflow-hidden">
+                <div id="progress-bar" class="bg-gradient-to-r from-indigo-500 to-blue-500 h-2.5 rounded-full transition-all duration-500 ease-out" style="width:0%"></div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+            <div class="flex flex-col">
+                <h2 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+                    รายการล่าสุด (Live)
+                </h2>
+                <div class="overflow-x-auto rounded-xl border border-slate-200 shadow-sm h-[400px] overflow-y-auto">
+                    <table class="min-w-full text-sm text-left text-slate-700 relative">
+                        <thead class="bg-slate-50 border-b border-slate-200 sticky top-0 backdrop-blur-md z-10">
+                            <tr>
+                                <th class="px-5 py-3 font-semibold text-slate-600">#</th>
+                                <th class="px-5 py-3 font-semibold text-slate-600">App ID</th>
+                                <th class="px-5 py-3 font-semibold text-slate-600">ชื่อ</th>
+                                <th class="px-5 py-3 font-semibold text-slate-600">บัตรประชาชน</th>
+                            </tr>
+                        </thead>
+                        <tbody id="summary-body" class="bg-white divide-y divide-slate-100" aria-live="polite">
+                            <tr id="empty-state">
+                                <td colspan="4" class="px-5 py-8 text-center text-slate-400 italic">รอข้อมูลใหม่จากระบบ...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="flex flex-col">
+                <h2 class="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-slate-400"></span>
+                    ประวัติการทำงาน (History)
+                </h2>
+                <div class="overflow-x-auto rounded-xl border border-slate-200 shadow-sm h-[400px] overflow-y-auto bg-slate-50">
+                    <table class="min-w-full text-sm text-left text-slate-700 relative">
+                        <thead class="bg-slate-100 border-b border-slate-200 sticky top-0 z-10">
+                            <tr>
+                                <th class="px-4 py-3 font-semibold text-slate-600">เวลา</th>
+                                <th class="px-4 py-3 font-semibold text-slate-600">App ID</th>
+                                <th class="px-4 py-3 font-semibold text-slate-600">ชื่อ</th>
+                                <th class="px-4 py-3 font-semibold text-slate-600">บัตรประชาชน</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body" class="divide-y divide-slate-200">
+                            <tr id="history-loading">
+                                <td colspan="4" class="px-5 py-8 text-center text-slate-400 italic">กำลังโหลดประวัติ...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const tbody = document.getElementById('summary-body');
+            const historyBody = document.getElementById('history-body');
+            const emptyState = document.getElementById('empty-state');
+            const historyLoading = document.getElementById('history-loading');
+            const statusText = document.getElementById('connection-status');
+            const pingIndicator = document.getElementById('ping-indicator');
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            const progressCount = document.getElementById('progress-count');
+
+            let count = 0;
+            let total = 0;
+
+            // Utilities
+            const createCell = (content, isMono = false, extraClasses = '') => {
+                const td = document.createElement('td');
+                td.className = `px-4 py-3 ${isMono ? 'font-mono text-slate-600 text-xs' : 'text-slate-800'} ${extraClasses}`;
+                td.textContent = content;
+                return td;
+            };
+
+            const updateBar = () => {
+                if (total > 0) {
+                    const pct = Math.min(100, Math.round((count / total) * 100));
+                    progressBar.style.width = pct + '%';
+                    progressText.textContent = pct + '%';
+                    if (progressCount) progressCount.textContent = count + '/' + total;
+                }
+            };
+
+            // 1. Fetch History independently on load
+            const loadHistory = async () => {
+                try {
+                    const response = await fetch('/history');
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    const arr = await response.json();
+
+                    historyLoading.remove();
+
+                    if (arr.length === 0) {
+                        const tr = document.createElement('tr');
+                        const td = createCell('ไม่มีประวัติการทำงาน', false, 'text-center italic text-slate-400');
+                        td.setAttribute('colspan', '4');
+                        tr.appendChild(td);
+                        historyBody.appendChild(tr);
+                        return;
+                    }
+
+                    // Append to DOM securely
+                    const fragment = document.createDocumentFragment();
+                    // iterate from end so latest timestamp appears first
+                    for (let i = arr.length - 1; i >= 0; i--) {
+                        const item = arr[i];
+                        const row = document.createElement('tr');
+                        row.className = "hover:bg-slate-100 transition-colors duration-150";
+                        row.appendChild(createCell(item.timestamp, true));
+                        row.appendChild(createCell(item.appId, true));
+                        row.appendChild(createCell(item.name.trim(), false, 'truncate max-w-[120px]'));
+                        row.appendChild(createCell(item.thaiId, true)); // โชว์เต็ม
+                        fragment.appendChild(row);
+                    }
+                    historyBody.appendChild(fragment);
+
+                } catch (error) {
+                    historyLoading.textContent = 'เกิดข้อผิดพลาดในการโหลดประวัติ';
+                    historyLoading.classList.add('text-red-500');
+                    console.error("History fetch failed:", error);
+                }
+            };
+
+            // 2. Initialize Server-Sent Events
+            const initSSE = () => {
+                const es = new EventSource('/progress');
+
+                es.onmessage = e => {
+                    const totMatch = e.data.match(/จำนวนรอบ:\s*(\d+)/);
+                    if (totMatch) {
+                        total = parseInt(totMatch[1], 10);
+                        updateBar();
+                        return; // Optimization: early return if it's just a config message
+                    }
+
+                    const m = e.data.match(/ทำสำเร็จ \d+\/\d+ \| AppID=(\d+) \| ชื่อ ([^|]+) \| บัตร (\d+)/);
+                    if (m) {
+                        if (count === 0 && emptyState) emptyState.remove();
+
+                        count++;
+                        updateBar();
+                        const [_, appId, name, natId] = m;
+
+                        const row = document.createElement('tr');
+                        row.className = "hover:bg-slate-50 transition-colors duration-150 animate-fade-in";
+
+                        row.appendChild(createCell(count));
+                        row.appendChild(createCell(appId, true));
+                        row.appendChild(createCell(name.trim()));
+                        row.appendChild(createCell(natId, true)); // ✅ ไม่ mask แล้ว
+
+                        tbody.append(row);
+                    }
+                };
+
+                es.onerror = () => {
+                    statusText.textContent = "Connection Lost";
+                    statusText.parentElement.classList.replace('bg-emerald-50', 'bg-red-50');
+                    statusText.parentElement.classList.replace('text-emerald-700', 'text-red-700');
+                    statusText.parentElement.classList.replace('border-emerald-100', 'border-red-100');
+                    if (pingIndicator) pingIndicator.remove();
+                    es.close();
+                };
+            };
+
+            // Bootstrap
+            loadHistory();
+            initSSE();
+        });
+    </script>
+</body>
+</html>

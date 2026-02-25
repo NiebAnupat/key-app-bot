@@ -16,6 +16,8 @@ async function getWebInput(): Promise<{
    tel: string;
    runTimes: number;
    payerRelation: string;
+   sendProgress: (msg: string) => void;
+   closeServer: () => void;
 }> {
    // prepare defaults
    const now = new Date();
@@ -24,7 +26,55 @@ async function getWebInput(): Promise<{
    const defaultTel = "0836151973";
 
    return new Promise((resolve, reject) => {
+      const clients: http.ServerResponse[] = [];
+      const messageBuffer: string[] = [];
+      function broadcast(msg: string) {
+         // keep buffer of last 50 messages
+         messageBuffer.push(msg);
+         if (messageBuffer.length > 50) messageBuffer.shift();
+         for (const r of clients) {
+            r.write(`data: ${msg}\n\n`);
+         }
+      }
+
       const server = http.createServer((req, res) => {
+         if (req.url === "/progress") {
+            // SSE endpoint
+            res.writeHead(200, {
+               "Content-Type": "text/event-stream",
+               "Cache-Control": "no-cache",
+               Connection: "keep-alive",
+            });
+            res.write("\n");
+            clients.push(res);
+            // replay buffered messages
+            for (const msg of messageBuffer) {
+               res.write(`data: ${msg}\n\n`);
+            }
+            req.on("close", () => {
+               const idx = clients.indexOf(res);
+               if (idx !== -1) clients.splice(idx, 1);
+            });
+            return;
+         }
+         if (req.url === "/history") {
+            // return parsed log as JSON
+            let arr: Array<{timestamp:string,name:string,thaiId:string,appId:string}> = [];
+            try {
+               const data = fs.readFileSync("success-log.txt", "utf-8");
+               for (const line of data.split(/\r?\n/)) {
+                  if (!line.trim()) continue;
+                  // [timestamp] สำเร็จ | ชื่อ: xxx | เลขบัตรประชาชน: yyy | App ID: zzz
+                  const m = line.match(/^\[(.+?)\] .*\| ชื่อ: (.*?) \| เลขบัตรประชาชน: (\d+) \| App ID: (\d+)/);
+                  if (m) {
+                     arr.push({timestamp:m[1],name:m[2],thaiId:m[3],appId:m[4]});
+                  }
+               }
+            } catch {}
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            return res.end(JSON.stringify(arr));
+         }
+
          if (req.method === "GET") {
             let html = fs.readFileSync(path.join(__dirname, "form.html"), "utf-8");
             // apply selections
@@ -48,10 +98,11 @@ async function getWebInput(): Promise<{
                const tel = params.get("tel") || "";
                const runTimes = parseInt(params.get("runTimes") || "1", 10);
                const payerRelation = params.get("payerRelation") || "3000";
+               // respond with progress page template
+               const progressHtml = fs.readFileSync(path.join(__dirname, "progress.html"), "utf-8");
                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-               res.end("ค่าถูกส่งแล้ว! ปิดหน้านี้ได้เลย");
-               server.close();
-               resolve({ dcrMonth, dcrYear, tel, runTimes, payerRelation });
+               res.end(progressHtml);
+               resolve({ dcrMonth, dcrYear, tel, runTimes, payerRelation, sendProgress: broadcast, closeServer: () => server.close() });
             });
          } else {
             res.writeHead(405);
@@ -652,7 +703,15 @@ async function main() {
       tel: rawTel,
       runTimes: rawTimes,
       payerRelation: rawPayer,
+      sendProgress,
+      closeServer,
    } = await getWebInput();
+   // helper for both console and SSE
+   const report = (msg: string) => {
+      console.log(msg);
+      sendProgress(msg);
+   };
+   report("ค่าปรับตั้งได้รับแล้ว (month=" + rawMonth + ", year=" + rawYear + ")");
 
    // apply defaults/validation
    let dcrMonth = rawMonth || currentMonth;
@@ -677,11 +736,11 @@ async function main() {
       payerRelation = "3000";
    }
 
-   console.log(`เลือกเดือน: ${dcrMonth}`);
-   console.log(`เลือกปี: ${dcrYear}`);
-   console.log(`โทรศัพท์: ${tel}`);
-   console.log(`จำนวนรอบ: ${runTimes}`);
-   console.log(`ความสัมพันธ์ผู้ชำระ: ${payerRelation}`);
+   report(`เลือกเดือน: ${dcrMonth}`);
+   report(`เลือกปี: ${dcrYear}`);
+   report(`โทรศัพท์: ${tel}`);
+   report(`จำนวนรอบ: ${runTimes}`);
+   report(`ความสัมพันธ์ผู้ชำระ: ${payerRelation}`);
 
    // Launch a browser using a persistent context so that the default profile
    // (cookies, logged-in sessions, etc.) is reused. The directory can be
@@ -708,6 +767,7 @@ async function main() {
       context = await chromium.launchPersistentContext(userDataDir, {
          headless: false,
          channel: "msedge",
+         screen : { width: 1280, height: 800 },
       });
       // persistent context already gives us a browser instance
       browser = context.browser()!;
@@ -738,7 +798,7 @@ async function main() {
 
    // start run loop
    for (let i = 1; i <= runTimes; i++) {
-      log(`\n===== ครั้งที่ ${i}/${runTimes} =====`);
+      report(`\n===== ครั้งที่ ${i}/${runTimes} =====`);
 
    // Navigate to the desired URL
    // await page.goto("https://prmorder.uatsiamsmile.com");
@@ -785,9 +845,11 @@ async function main() {
       );
 
       appendSuccessLog(data, appId);
-      log(`===== สำเร็จครั้งที่ ${i}/${runTimes} =====\n`);
+      report(`ทำสำเร็จ ${i}/${runTimes} | AppID=${appId} | ชื่อ ${data.fullName} | บัตร ${data.thaiId}`);
    }
 
-   log(`\nเสร็จสิ้นทั้งหมด ${runTimes} ครั้ง`);
+   report(`\nเสร็จสิ้นทั้งหมด ${runTimes} ครั้ง`);
+   // close server after done
+   closeServer();
 }
 main();
