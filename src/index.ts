@@ -1,6 +1,7 @@
 import { log } from "console";
 import { Browser, chromium, Page } from "playwright";
 import * as fs from "fs";
+import * as path from "path";
 import * as readline from "readline";
 // @ts-ignore
 import thaiIdCard from "thai-id-card";
@@ -675,20 +676,33 @@ async function main() {
    }
    log(`เลือกความสัมพันธ์: ${payerRelationLabel}\n`);
 
-   // Launch a fresh browser instance instead of attaching via remote debugging
-   // By default Playwright uses Chromium; to use Microsoft Edge specify
-   // either the channel or an explicit executablePath.
-   // Example using channel:
-   //    const browser = await chromium.launch({ headless: false, channel: "msedge" });
-   // Example using a path:
-   //    const browser = await chromium.launch({ headless: false, executablePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" });
-   // Uncomment/change one of the above lines depending on which browser you want to launch.
+   // Launch a browser using a persistent context so that the default profile
+   // (cookies, logged-in sessions, etc.) is reused. The directory can be
+   // overridden via an environment variable which makes it easier to run this
+   // script on another computer without editing the source.
+   // build a default profile path relative to the current user's home directory
+   const defaultProfileDir = path.join(
+      process.env.USERPROFILE || process.env.HOME || "",
+      "AppData",
+      "Local",
+      "Microsoft",
+      "Edge",
+      "User Data",
+   );
+   const userDataDir = process.env.USER_DATA_DIR || defaultProfileDir;
 
-   const browser = await chromium.launch({ headless: false, channel: "msedge" });
+   const context = await chromium.launchPersistentContext(userDataDir, {
+      headless: false,
+      channel: "msedge",
+   });
 
-   // create a new context/page for automation
-   const context = await browser.newContext();
-   const page = await context.newPage();
+   // persistent context already gives us a browser instance
+   const browser = context.browser();
+   if (!browser) {
+      throw new Error("Failed to retrieve browser from persistent context");
+   }
+   // use the first existing page or open a new one
+   const page = context.pages()[0] || (await context.newPage());
 
    await page.bringToFront();
 
@@ -721,6 +735,7 @@ async function main() {
       //    "http://uat.siamsmile.co.th:9157/Modules/PH/frmPHNewApp1.aspx?IGCode=SUdOVzY5MDIwMDA1Njg=",
       // );
       await openSSSPage(page, data.fullName);
+      // browser is guaranteed non-null by earlier guard
       const sssPages = browser.contexts()[0].pages();
       const sssPage = sssPages[sssPages.length - 1];
       await sssPage.waitForLoadState("networkidle");
