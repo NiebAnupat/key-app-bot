@@ -47,6 +47,8 @@ async function createOrder(page: Page, data: OrderData) {
       page = await page.context().newPage();
    }
    try {
+      // wait for https://prmorder.uatsiamsmile.com/
+      await page.waitForURL("https://prmorder.uatsiamsmile.com/**", { timeout: 20000 });
       await page.goto("https://prmorder.uatsiamsmile.com/premiumnoticepages");
    } catch (err) {
       // if frame detached, recreate page and retry
@@ -680,29 +682,52 @@ async function main() {
    // (cookies, logged-in sessions, etc.) is reused. The directory can be
    // overridden via an environment variable which makes it easier to run this
    // script on another computer without editing the source.
-   // build a default profile path relative to the current user's home directory
-   const defaultProfileDir = path.join(
-      process.env.USERPROFILE || process.env.HOME || "",
-      "AppData",
-      "Local",
-      "Microsoft",
-      "Edge",
-      "User Data",
-   );
-   const userDataDir = process.env.USER_DATA_DIR || defaultProfileDir;
-
-   const context = await chromium.launchPersistentContext(userDataDir, {
-      headless: false,
-      channel: "msedge",
-   });
-
-   // persistent context already gives us a browser instance
-   const browser = context.browser();
-   if (!browser) {
-      throw new Error("Failed to retrieve browser from persistent context");
+   // always prefer a profile folder in the project root; environment
+   // variable still overrides. do not fall back to the home directory.
+   const workspaceProfileDir = path.join(process.cwd(), "UserData");
+   const userDataDir =
+      process.env.USER_DATA_DIR || workspaceProfileDir;
+   // create directory proactively so launchPersistentContext won't fail on some systems
+   if (!fs.existsSync(userDataDir)) {
+      try {
+         fs.mkdirSync(userDataDir, { recursive: true });
+         log("Created userDataDir:", userDataDir);
+      } catch (mkdirErr) {
+         log("Failed to create userDataDir", mkdirErr);
+      }
    }
+
+   let context;
+   let browser: Browser;
+   try {
+      context = await chromium.launchPersistentContext(userDataDir, {
+         headless: false,
+         channel: "msedge",
+      });
+      // persistent context already gives us a browser instance
+      browser = context.browser()!;
+      if (!browser) throw new Error("browser returned null");
+   } catch (err: any) {
+      log("Failed to launch persistent context:", err.message || err);
+      log("Deleting/renaming userDataDir and retrying with fresh profile...");
+      try {
+         if (fs.existsSync(userDataDir)) {
+            fs.rmSync(userDataDir, { recursive: true, force: true });
+         }
+      } catch (rmErr) {
+         log("Unable to remove userDataDir:", rmErr);
+      }
+      log("Falling back to regular browser.launch...");
+      browser = await chromium.launch({ headless: false, channel: "msedge" });
+      context = await browser.newContext();
+   }
+
    // use the first existing page or open a new one
    const page = context.pages()[0] || (await context.newPage());
+
+   // open the default URL immediately so the browser starts on the target site
+   await page.goto("https://prmorder.uatsiamsmile.com/");
+   await page.waitForLoadState("networkidle");
 
    await page.bringToFront();
 
